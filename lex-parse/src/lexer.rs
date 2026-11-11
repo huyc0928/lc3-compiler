@@ -247,6 +247,30 @@ impl<'a, 'ctx> Lexer<'a, 'ctx> {
 
     fn number(&mut self, first_digit: char) -> Result<i32, ()> {
         let _float_error: bool = false;
+
+        // 0x / 0X 前缀按十六进制解析（如 0x30FF）
+        if first_digit == '0' && (self.first() == 'x' || self.first() == 'X') {
+            self.bump();
+            let mut val: i32 = 0;
+            let mut digits: i32 = 0;
+            loop {
+                let c = self.first();
+                let digit = match c {
+                    '0'..='9' => c as i32 - '0' as i32,
+                    'a'..='f' => c as i32 - 'a' as i32 + 10,
+                    'A'..='F' => c as i32 - 'A' as i32 + 10,
+                    _ => break,
+                };
+                val = val * 16 + digit;
+                digits += 1;
+                self.bump();
+            }
+            if digits == 0 {
+                return Err(()); // "0x" 后没有数字
+            }
+            return Ok(val);
+        }
+
         let mut val: i32 = first_digit as i32 - '0' as i32;
 
         loop {

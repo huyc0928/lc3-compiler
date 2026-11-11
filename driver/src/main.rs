@@ -1,5 +1,5 @@
 #![deny(rust_2018_idioms)]
-use std::{path::PathBuf, fs::File, io::Read};
+use std::{path::PathBuf, fs::File, io::Read, process::exit};
 use analysis::{analysis::Analyzer, typecheck::{Typecheck, TypedASTPrint}};
 use clap::{Parser};
 //use codegen::asmprinter::AsmPrinter;
@@ -15,7 +15,7 @@ struct Cli {
 
     // Produce verbose output (print AST)
     #[arg(short = 'v', long = "verbose", default_value_t = false)]
-    verbose: bool, 
+    verbose: bool,
 
     // Disables most analysis errors (type checking)
     #[arg(long = "sandbox", default_value_t = false)]
@@ -23,11 +23,15 @@ struct Cli {
 
     // Output path
     #[arg(short = 'S', long = "asm", default_value_t = false)]
-    asm: bool, 
-    
+    asm: bool,
+
     // Enable debugging information
     #[arg(short = 'g', long = "debug", default_value_t = false)]
     debug: bool,
+
+    // 程序起始地址（LC-3 汇编 .ORIG），默认 x3000
+    #[arg(long = "orig", value_name = "ADDR", default_value = "x3000")]
+    orig: String,
 
     #[arg(value_name = "INPUT_FILE")]
     input: PathBuf,
@@ -42,7 +46,7 @@ fn main() {
 
     let mut input_file = match File::open(input_path.clone()) {
         Ok(input_file) => input_file,
-        Err(_) => {println!("Invalid input file. {:?}", input_path); return},
+        Err(_) => {println!("Invalid input file. {:?}", input_path); exit(1)},
     };
 
     let mut input_stream = String::new();
@@ -57,7 +61,7 @@ fn main() {
 
     let ast = match parser.parse() {
         Ok(ast) => ast,
-        Err(error) => {error_handler.print_parser_error(error); return},
+        Err(error) => {error_handler.print_parser_error(error); exit(1)},
     };
 
     let root =&ast.root.unwrap();
@@ -67,17 +71,17 @@ fn main() {
     }
 
     let mut analyzer: Analyzer<'_> = Analyzer::new(&ast, &context, &error_handler);
-    
+
     // Check for analysis errors
     analyzer.traverse(root);
 
     if *error_handler.fatal.borrow() {
-        return;
+        exit(1);
     }
 
     if cli.verbose {
         analyzer.print_symbol_table();
-    } 
+    }
 
     let mut typecheck: Typecheck<'_> = Typecheck::new(&mut analyzer.symbol_table, &ast, &context, &error_handler);
 
@@ -97,37 +101,12 @@ fn main() {
 
     let outfile = match cli.output {
         Some(file) => file,
-        None => PathBuf::from(r"/out.asm")
+        None => PathBuf::from("out.asm")
     };
-    printer.print_to_file(outfile);
-
-    //println!("two: {:?}", cli.verbose);  */
+    if let Err(errors) = printer.print_to_file(outfile, &cli.orig) {
+        println!("error: generated assembly violates LC-3 constraints:");
+        println!("{}", errors);
+        exit(1);
+    }
 
 }
-
-/*
-#[cfg(test)]
-mod binary_tests {
-    use std::process::Command;
-    use std::fs;
-
-
-    #[test]
-    fn basic() {
-        let paths = fs::read_dir("../tests/").unwrap();
-        for path in paths {
-            println!("Name: {}", path.unwrap().path().display())
-        }
-
-        /*let compile = Command::new("lc3-compile")
-            .arg("in/main.c")
-            .arg("-o")
-            .arg("out/out.asm")
-            .output()
-            .unwrap_or_else(|e| {panic!("failed to compile: {e}")});
-        */
-        //let test = Command::new(lc3)
-        
-    }
-    
-} */

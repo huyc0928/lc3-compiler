@@ -84,6 +84,10 @@ impl <'a> Vistior<'a> for Typecheck<'a> {
             }
             ASTNode::UnaryOp { op, child, order } => {
                 match op {
+                    UnaryOpType::Increment | UnaryOpType::Decrement => {
+                        // 子表达式保持 lvalue，代码生成按"地址"处理
+                        LR::RValue
+                    },
                     UnaryOpType::Address => {
                         // TODO: Make sure child is an Lvalue.
                         if self.lr.get(child) != Some(&LR::LValue) {

@@ -759,6 +759,8 @@ impl<'a> Parser<'a> {
             TokenKind::Star => Some(((), 28)),
             TokenKind::PlusPlus => Some(((), 28)),
             TokenKind::MinusMinus => Some(((), 28)),
+            TokenKind::Exclamation => Some(((), 28)),
+            TokenKind::Tilde => Some(((), 28)),
             _ => None
         }
     }
@@ -798,6 +800,10 @@ impl<'a> Parser<'a> {
 
             TokenKind::And => Some((10, 11)),
             TokenKind::Bar => Some((8, 9)),
+
+            // 逻辑与/或：优先级介于位或与赋值之间，|| 最低
+            TokenKind::AndAnd => Some((6, 7)),
+            TokenKind::BarBar => Some((4, 5)),
 
             TokenKind::Equals => Some((5, 4)),
 

@@ -18,3 +18,4 @@ Cargo.lock
 *.pdb
 
 .devcontainer
+__pycache__/

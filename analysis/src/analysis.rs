@@ -141,6 +141,9 @@ impl <'a> Vistior<'a> for Analyzer<'a> {
                 let scope = self.curr_scope();
 
                 scope.next_variable_slot += size as i32;
+                // 静态局部不占栈帧，但多算无妨；这里统一记入高水位（借记结束后再落账）
+                let slot_now = scope.next_variable_slot;
+                let not_global = !scope.is_global;
 
                 let entry = Declaration {
                     identifier,
@@ -158,7 +161,12 @@ impl <'a> Vistior<'a> for Analyzer<'a> {
                 match self.symbol_table.add(*node_h, entry) {
                     Err(error) => {self.report_error(error)}
                     Ok(()) => ()
-                }  
+                }
+
+                if not_global {
+                    self.symbol_table.current_frame_size =
+                        self.symbol_table.current_frame_size.max(slot_now);
+                }
 
             },
             ASTNode::ParameterDecl { identifier, type_info } => {
@@ -216,6 +224,9 @@ impl <'a> Vistior<'a> for Analyzer<'a> {
                     Err(error) => {self.report_error(error)}
                     Ok(()) => ()
                 };
+
+                // 新函数，重置局部变量高水位
+                self.symbol_table.current_frame_size = 0;
 
                 // TODO: Distinguish between scopes / stack frames?
                 self.enter_scope(0, 0);
@@ -278,6 +289,9 @@ impl <'a> Vistior<'a> for Analyzer<'a> {
                 if *new_scope {self.exit_scope();}
             }
             ASTNode::FunctionDecl { body: _, parameters: _, identifier: _, return_type: _ } => {
+                // 落账本函数的栈帧大小，供代码生成序言使用
+                let frame_size = self.symbol_table.current_frame_size;
+                self.symbol_table.frame_sizes.insert(*node_h, frame_size);
                 self.exit_scope();
             }
             _ => ()

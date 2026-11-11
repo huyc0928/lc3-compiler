@@ -57,12 +57,17 @@ pub struct SymbolTable {
     pub records: Vec<Record>, // This is basically a type. // Global Records only
     pub entries: SparseSecondaryMap<ASTNodeHandle, Declaration>,
     pub stack: Vec<Scope>, // Reference to a Scope
+    // 当前函数局部变量的高水位（含嵌套作用域），FunctionDecl 边界处重置/落账
+    pub current_frame_size: i32,
+    // 每个函数的局部变量总大小，供代码生成在序言一次性分配
+    pub frame_sizes: SparseSecondaryMap<ASTNodeHandle, i32>,
 }
 
 
 impl SymbolTable {
     pub fn new() -> SymbolTable {
-        let mut st = SymbolTable { entries: SparseSecondaryMap::new(), stack: Vec::new(), records: Vec::new()};
+        let mut st = SymbolTable { entries: SparseSecondaryMap::new(), stack: Vec::new(), records: Vec::new(),
+            current_frame_size: 0, frame_sizes: SparseSecondaryMap::new()};
         let mut global_scope = Scope::new(0, 0);
         global_scope.is_global = true;
         st.stack.push(global_scope);
