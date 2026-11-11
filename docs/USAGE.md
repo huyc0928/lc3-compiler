@@ -14,6 +14,16 @@ cargo build --release
 # binary: target/release/lc3-compile
 ```
 
+To call `lc3-compile` from any directory, install it into `~/.cargo/bin`
+(already on PATH with rustup):
+
+```bash
+cargo install --path driver --force
+```
+
+Re-run the same command after pulling or changing the compiler source to
+refresh the installed binary — it is a copy, not a link into `target/`.
+
 ## 2. Command line
 
 ```

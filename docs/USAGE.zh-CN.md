@@ -14,6 +14,16 @@ cargo build --release
 # 可执行文件：target/release/lc3-compile
 ```
 
+想在任意目录直接调用 `lc3-compile`，把它安装进 `~/.cargo/bin`（rustup 环境
+该目录已在 PATH 中）：
+
+```bash
+cargo install --path driver --force
+```
+
+安装的是二进制副本（不是指向 `target/` 的链接），拉取或修改源码后需重跑同
+一命令刷新。
+
 ## 2. 命令行
 
 ```
