@@ -29,6 +29,8 @@ pub struct Codegen<'a> {
     if_counter: usize,
     while_counter: usize,
     for_counter: usize,
+    // Suki 兼容模式下布尔归一化序列的标号计数
+    bool_counter: usize,
 }
 
 #[macro_use]
@@ -48,7 +50,7 @@ impl<'a> Codegen<'a> {
     pub fn new(ast: &'a AST, printer: &'a mut AsmPrinter, context: &'a Context<'a>, symbol_table: SymbolTable, casts: SparseSecondaryMap<ASTNodeHandle, TypeCast>) -> Codegen<'a> {
         Codegen { regfile: [false ; 8], context, symbol_table, printer, ast, casts, scope: context.get_string("global"),
         const_pool: HashMap::new(), used_mul: false,
-        if_counter: 0, while_counter: 0, for_counter: 0}
+        if_counter: 0, while_counter: 0, for_counter: 0, bool_counter: 0}
     }
 
     fn get_empty_reg(&self) -> Register {
@@ -158,13 +160,31 @@ impl<'a> Codegen<'a> {
     }
 
     // 统一的布尔归一化：条件码满足 cc 时取 1，否则取 0
-    // BRcc #2 / AND ret,#0 / BRnzp #2 / AND ret,#0 / ADD ret,#1
+    // 默认（lc3tools）：BRcc #2 / AND ret,#0 / BRnzp #2 / AND ret,#0 / ADD ret,#1
+    // Suki 兼容模式：数字偏移改写为标号
     fn normalize_bool(&mut self, ret: Register, cc: (bool, bool, bool)) -> () {
-        emit!(self, Instruction(LC3Inst::BrImm(cc.0, cc.1, cc.2, Imm::Int(2)), None));
+        if !self.printer.suki_compat() {
+            emit!(self, Instruction(LC3Inst::BrImm(cc.0, cc.1, cc.2, Imm::Int(2)), None));
+            emit!(self, Instruction(LC3Inst::AndImm(ret, ret, Imm::Int(0)), Some("evaluate to '0' or 'false'".to_string())));
+            emit!(self, Instruction(LC3Inst::BrImm(true, true, true, Imm::Int(2)), None));
+            emit!(self, Instruction(LC3Inst::AndImm(ret, ret, Imm::Int(0)), None));
+            emit!(self, Instruction(LC3Inst::AddImm(ret, ret, Imm::Int(1)), Some("evaluate to '1' or 'true'".to_string())));
+            return;
+        }
+
+        let func = self.context.resolve_string(self.scope);
+        let n = self.bool_counter;
+        self.bool_counter += 1;
+        let label_true = Label::Label(format!("{func}.bool.{n}.true"));
+        let label_end = Label::Label(format!("{func}.bool.{n}.end"));
+
+        emit!(self, Instruction(LC3Inst::Br(cc.0, cc.1, cc.2, label_true.clone()), None));
         emit!(self, Instruction(LC3Inst::AndImm(ret, ret, Imm::Int(0)), Some("evaluate to '0' or 'false'".to_string())));
-        emit!(self, Instruction(LC3Inst::BrImm(true, true, true, Imm::Int(2)), None));
+        emit!(self, Instruction(LC3Inst::Br(true, true, true, label_end.clone()), None));
+        emit!(self, HeaderLabel(label_true, None));
         emit!(self, Instruction(LC3Inst::AndImm(ret, ret, Imm::Int(0)), None));
         emit!(self, Instruction(LC3Inst::AddImm(ret, ret, Imm::Int(1)), Some("evaluate to '1' or 'true'".to_string())));
+        emit!(self, HeaderLabel(label_end, None));
     }
 
     fn emit_condition_node(&mut self, node_h: &ASTNodeHandle) -> Register {
@@ -281,8 +301,10 @@ impl<'a> Codegen<'a> {
                     self.emit_mul_runtime();
                 }
 
-                // 常量池：所有超出 imm5 的立即数，统一放数据段
-                for (value, label) in &self.const_pool {
+                // 常量池：所有超出 imm5 的立即数，统一放数据段（按值排序，保证输出确定）
+                let mut pool: Vec<(&i32, &String)> = self.const_pool.iter().collect();
+                pool.sort_by_key(|(value, _)| **value);
+                for (value, label) in pool {
                     self.printer.data(Directive(Some(Label::Label(label.clone())), LC3Directive::Fill(*value), Some("constant pool".to_string())));
                 }
             }

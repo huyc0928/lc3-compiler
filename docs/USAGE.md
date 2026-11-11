@@ -23,6 +23,8 @@ Options:
   -o, --output <FILE>   output assembly path (default: ./out.asm)
       --orig <ADDR>     .ORIG start address (default: x3000; accepts x3000,
                         0x3000, #12288)
+      --compat <TARGET> target assembler: lc3tools (default) or suki
+                        (ICS OJ judge backend)
   -v, --verbose         print AST and symbol table
   -g, --debug           enable debug information
       --sandbox         disable most analysis errors (type checking)
@@ -155,6 +157,38 @@ Reserved names you must not use as C identifiers: the mnemonics and aliases
 (`add`, `br`, `ld`, `ret`, `halt`, `out`, `puts`, …), `r0`–`r7` (any case),
 and the compiler runtime name `__mul`. Collisions are reported as
 `invalid label 'add': ...`.
+
+### `--compat suki` (ICS OJ / Suki judge backend)
+
+The deployed OJ judges with `suki-lc3`, whose assembler is stricter than
+lc3tools in ways that reject ordinary compiler output:
+
+- labels allow only 1–20 ASCII **alphanumeric** characters (no `_`, no `.`);
+- a label may not share its line spelling with any mnemonic/register
+  (case-insensitive), and each line holds at most one label — a label on a
+  line by itself is an error;
+- PC-relative operands (`BR/LD/ST/LDI/STI/LEA/JSR`) must be labels, never
+  numeric offsets (`BRz #2` is rejected);
+- `.FILL` accepts only numeric values, not labels.
+
+With `--compat suki` the compiler adapts automatically and the default
+lc3tools output is untouched:
+
+- generated labels are rewritten (`USER_STACK`→`USERSTACK`,
+  `main.while.0.end`→`mainwhile0end`, `__mul`→`Xmul`, `CONST_12544`→
+  `CONST12544`); C identifiers containing `_`/`.` are folded the same way,
+  with `X` disambiguation when the fold collides;
+- boolean normalization sequences use labeled branches instead of `#2`
+  offsets;
+- labels are placed on the same line as the following instruction; two labels
+  that bind the same address (e.g. an `if`-exit label directly followed by a
+  function's teardown label) are collapsed into one name via reference
+  rewriting.
+
+The result assembles with **both** assemblers — verify with
+`python3 tests/verify.py --compat suki` (semantics via lc3tools simulation)
+and the Suki-side acceptance test `suki_compat_outputs_assemble` in
+`suki-lc3/tests/repro_oj.rs`.
 
 ## 7. C coding rules and pitfalls for LC-3
 

@@ -13,6 +13,7 @@
 """
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,8 @@ ROOT = os.path.dirname(HERE)
 COMPILER = os.path.join(ROOT, 'target', 'release', 'lc3-compile')
 INPUT_DIR = os.path.join(HERE, 'input')
 RUN_LIMIT = 200000
+# --compat suki 时，把产物额外落到该目录，供 suki-lc3/tests/repro_oj.rs 汇编校验
+SUKI_OUT_DIR = os.path.join(ROOT, 'target', 'suki-compat')
 
 sys.path.insert(0, HERE)
 from sim_run import assemble, Sim  # noqa: E402
@@ -39,9 +42,12 @@ def gcc_expected(c_path):
         return run.returncode & 0xFF, None
 
 
-def compile_c(c_path, out_asm):
-    proc = subprocess.run([COMPILER, '-o', out_asm, c_path],
-                          capture_output=True, text=True)
+def compile_c(c_path, out_asm, compat=None):
+    cmd = [COMPILER]
+    if compat:
+        cmd += ['--compat', compat]
+    cmd += ['-o', out_asm, c_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -53,7 +59,17 @@ def run_return_value(obj):
 
 
 def main():
-    filters = sys.argv[1:]
+    args = sys.argv[1:]
+    compat = None
+    if '--compat' in args:
+        index = args.index('--compat')
+        compat = args[index + 1]
+        del args[index:index + 2]
+    if compat == 'suki' and os.path.isdir(SUKI_OUT_DIR):
+        shutil.rmtree(SUKI_OUT_DIR)
+    os.makedirs(SUKI_OUT_DIR, exist_ok=True)
+
+    filters = args
     cases = sorted(f for f in os.listdir(INPUT_DIR) if f.endswith('.c'))
     if filters:
         cases = [c for c in cases if any(x in c for x in filters)]
@@ -73,11 +89,14 @@ def main():
 
         with tempfile.TemporaryDirectory(prefix='lc3c-') as tmp:
             out_asm = os.path.join(tmp, 'out.asm')
-            code, output = compile_c(c_path, out_asm)
+            code, output = compile_c(c_path, out_asm, compat)
             if code != 0 or not os.path.isfile(out_asm):
                 rows.append((name, 'FAIL', '编译器失败: ' + output.strip()[:200]))
                 failures += 1
                 continue
+
+            if compat == 'suki':
+                shutil.copy(out_asm, os.path.join(SUKI_OUT_DIR, name + '.asm'))
 
             obj, asm_out = assemble(out_asm)
             if obj is None:
@@ -102,6 +121,8 @@ def main():
 
     for name, status, note in rows:
         print('[%s] %-28s %s' % (status, name, note))
+    if compat:
+        print('(compat: %s，产物目录 %s)' % (compat, SUKI_OUT_DIR if compat == 'suki' else '-'))
     print('%d/%d 通过' % (len(rows) - failures, len(rows)))
     return 1 if failures else 0
 

@@ -23,6 +23,8 @@ Options:
   -o, --output <FILE>   输出汇编路径（默认 ./out.asm）
       --orig <ADDR>     .ORIG 起始地址（默认 x3000；接受 x3000 / 0x3000 /
                         #12288 三种写法）
+      --compat <TARGET> 目标汇编器：lc3tools（默认，标准实现）或 suki
+                        （ICS OJ 判题后端）
   -v, --verbose         打印 AST 与符号表
   -g, --debug           输出调试信息
       --sandbox         关闭大部分分析错误（类型检查）
@@ -145,6 +147,31 @@ int i = *dim;
 不能用作 C 标识符的保留名：助记符与别名（`add`、`br`、`ld`、`ret`、`halt`、
 `out`、`puts`…）、`r0`–`r7`（任意大小写）、编译器运行时函数名 `__mul`。
 冲突会报 `invalid label 'add': ...`。
+
+### `--compat suki`（ICS OJ / Suki 判题后端兼容）
+
+线上 OJ 的判题器是 `suki-lc3`，其汇编器在多处比 lc3tools 严格，普通编译
+产物会被拒：
+
+- 标号只允许 1–20 位 ASCII **字母数字**（不含 `_` 和 `.`）；
+- 标号与助记符/寄存器大小写不敏感地冲突即拒绝；每行至多一个标号，
+  标号独占一行是错误；
+- PC 相对操作数（`BR/LD/ST/LDI/STI/LEA/JSR`）必须是标号，不接受数字偏移
+  （`BRz #2` 被拒）；
+- `.FILL` 只接受数值，不接受标号。
+
+`--compat suki` 自动完成适配，默认 lc3tools 输出完全不变：
+
+- 生成的标号统一改写（`USER_STACK`→`USERSTACK`、`main.while.0.end`→
+  `mainwhile0end`、`__mul`→`Xmul`、`CONST_12544`→`CONST12544`）；含
+  `_`/`.` 的 C 标识符同样折叠，折叠冲突时加 `X` 消歧；
+- 布尔归一化序列改用带标号的分支，替代 `#2` 数字偏移；
+- 标号并入下一条指令同一行；绑定同一地址的两个标号（如 `if` 出口标号紧邻
+  函数 teardown 标号）通过引用重定向合并为一个名字。
+
+产物对两个汇编器都能通过——用 `python3 tests/verify.py --compat suki`
+（lc3tools 模拟验证语义）和 suki 侧测试
+`suki-lc3/tests/repro_oj.rs` 的 `suki_compat_outputs_assemble` 双向校验。
 
 ## 7. 编写 C 时的注意事项（LC-3 特有）
 

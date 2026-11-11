@@ -3,29 +3,126 @@ use std::{path::PathBuf, fs::File};
 use std::io::Write;
 use std::collections::HashMap;
 
+/// 输出目标汇编器的兼容档位。
+/// - Lc3Tools：默认，遵循本机 lc3tools 的宽松规则（标号可含 `_`/`.`、数字偏移等）。
+/// - Suki：面向 suki-lc3 判题器（ICS OJ 后端）：标号仅限 1-20 位字母数字且字母开头、
+///   大小写敏感、PC 相对操作数不接受数字偏移，标号统一在推入时改写以规避。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompatTarget {
+    #[default]
+    Lc3Tools,
+    Suki,
+}
+
 pub struct AsmPrinter {
     instructions: Vec<LC3Bundle>,
     data: Vec<LC3Bundle>,
+    compat: CompatTarget,
+    // Suki 模式下原始标号 → 改写后标号，保证定义与引用一致
+    label_map: HashMap<String, String>,
 }
 
 //TODO: Support 'builder' style api for these:
 
 impl AsmPrinter {
     pub fn new() -> AsmPrinter {
-        AsmPrinter { instructions: Vec::new(), data: Vec::new() }
+        AsmPrinter { instructions: Vec::new(), data: Vec::new(), compat: CompatTarget::Lc3Tools, label_map: HashMap::new() }
     }
+
+    pub fn set_compat(&mut self, compat: CompatTarget) -> () {
+        self.compat = compat;
+    }
+
+    pub fn compat(&self) -> CompatTarget {
+        self.compat
+    }
+
+    /// Suki 兼容模式是否开启（代码生成据此改用标号化的布尔序列）。
+    pub fn suki_compat(&self) -> bool {
+        self.compat == CompatTarget::Suki
+    }
+
     pub fn inst(&mut self, inst: LC3Bundle) -> () {
+        let inst = self.map_bundle(inst);
         self.instructions.push(inst);
     }
 
     pub fn data(&mut self, data: LC3Bundle) -> () {
+        let data = self.map_bundle(data);
         self.data.push(data);
+    }
+
+    fn map_bundle(&mut self, bundle: LC3Bundle) -> LC3Bundle {
+        if self.compat != CompatTarget::Suki {
+            return bundle;
+        }
+        match bundle {
+            LC3Bundle::HeaderLabel(label, comment) => {
+                LC3Bundle::HeaderLabel(Label::Label(self.map_label(label.to_string())), comment)
+            }
+            LC3Bundle::Instruction(inst, comment) => {
+                LC3Bundle::Instruction(self.map_inst_labels(inst), comment)
+            }
+            LC3Bundle::LabeledInstruction(label, inst, comment) => {
+                let label = Label::Label(self.map_label(label.to_string()));
+                LC3Bundle::LabeledInstruction(label, self.map_inst_labels(inst), comment)
+            }
+            LC3Bundle::Directive(label, directive, comment) => {
+                let label = label.map(|l| Label::Label(self.map_label(l.to_string())));
+                LC3Bundle::Directive(label, directive, comment)
+            }
+            other => other,
+        }
+    }
+
+    fn map_inst_labels(&mut self, inst: LC3Inst) -> LC3Inst {
+        match inst {
+            LC3Inst::Br(n, z, p, label) => LC3Inst::Br(n, z, p, Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::Jsr(label) => LC3Inst::Jsr(Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::Ld(reg, label) => LC3Inst::Ld(reg, Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::Ldi(reg, label) => LC3Inst::Ldi(reg, Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::Lea(reg, label) => LC3Inst::Lea(reg, Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::St(reg, label) => LC3Inst::St(reg, Label::Label(self.map_label(label.to_string()))),
+            LC3Inst::Sti(reg, label) => LC3Inst::Sti(reg, Label::Label(self.map_label(label.to_string()))),
+            other => other,
+        }
+    }
+
+    /// Suki 模式下的标号改写：去掉 `_` 与 `.`；运行时名（双下划线开头）加 X 前缀；
+    /// 与助记符/寄存器冲突（大小写不敏感）时加 X；截断到 20 字符；冲突时续加 X。
+    /// 同一原始名总是映射到同一结果。
+    fn map_label(&mut self, name: String) -> String {
+        if let Some(mapped) = self.label_map.get(&name) {
+            return mapped.clone();
+        }
+        let mut base = name.replace(['_', '.'], "");
+        if name.starts_with('_') {
+            base.insert(0, 'X');
+        }
+        if reserved_word(&base.to_lowercase()).is_some() {
+            base.push('X');
+        }
+        if base.len() > 20 {
+            base.truncate(20);
+        }
+        let mut candidate = base.clone();
+        while self.label_map.values().any(|v| v.eq_ignore_ascii_case(&candidate)) {
+            if candidate.len() >= 20 {
+                candidate.pop();
+            }
+            candidate.push('X');
+        }
+        self.label_map.insert(name, candidate.clone());
+        candidate
     }
 
     // 输出 .asm。orig 形如 "x3000"/"0x3000"/"#12288"。
     // 输出前做 LC-3 合规校验：立即数范围、PC 相对偏移范围、标号合法性与唯一性。
     // 校验失败时返回所有问题，由调用方决定退出。
     pub fn print_to_file(&mut self, path: PathBuf, orig: &str) -> Result<(), String> {
+        if self.compat == CompatTarget::Suki {
+            self.suki_place_labels();
+        }
         let errors = self.validate_and_layout(orig);
 
         let mut file = File::create(path).map_err(|e| format!("cannot open output file: {e}"))?;
@@ -36,6 +133,69 @@ impl AsmPrinter {
             return Err(errors.join("\n"));
         }
         Ok(())
+    }
+
+    // Suki 兼容：标号安放预处理
+    // 1) 连续的标号绑定同一地址，Suki 每行只允许一个标号：
+    //    保留最后一个，其余作为别名，引用统一重定向。
+    // 2) 标号不允许独占一行，把剩余标号并入下一条指令的同一行。
+    fn suki_place_labels(&mut self) {
+        // 1) 别名归并
+        let mut alias: HashMap<String, String> = HashMap::new();
+        let mut placed: Vec<LC3Bundle> = Vec::new();
+        let mut last_kept: Option<String> = None;
+        for bundle in self.instructions.drain(..) {
+            match bundle {
+                LC3Bundle::HeaderLabel(label, comment) => {
+                    let name = label.to_string();
+                    match &last_kept {
+                        Some(kept) => {
+                            alias.insert(name, kept.clone());
+                            let _ = comment; // 被归并标号的注释一并丢弃
+                        }
+                        None => {
+                            last_kept = Some(name.clone());
+                            placed.push(LC3Bundle::HeaderLabel(label, comment));
+                        }
+                    }
+                }
+                LC3Bundle::Newline | LC3Bundle::SectionComment(_) => {
+                    placed.push(bundle); // 不打断连续段
+                }
+                other => {
+                    last_kept = None;
+                    placed.push(other);
+                }
+            }
+        }
+        self.instructions = placed;
+
+        // 2) 引用重定向
+        if !alias.is_empty() {
+            for bundle in &mut self.instructions {
+                if let LC3Bundle::Instruction(inst, _) | LC3Bundle::LabeledInstruction(_, inst, _) = bundle {
+                    rewrite_inst_labels(inst, &alias);
+                }
+            }
+        }
+
+        // 3) 标号并入下一条指令
+        let mut merged: Vec<LC3Bundle> = Vec::new();
+        let mut pending: Option<Label> = None;
+        for bundle in self.instructions.drain(..) {
+            match bundle {
+                LC3Bundle::HeaderLabel(label, _) => { pending = Some(label); }
+                LC3Bundle::Instruction(inst, comment) => {
+                    if let Some(label) = pending.take() {
+                        merged.push(LC3Bundle::LabeledInstruction(label, inst, comment));
+                    } else {
+                        merged.push(LC3Bundle::Instruction(inst, comment));
+                    }
+                }
+                other => merged.push(other),
+            }
+        }
+        self.instructions = merged;
     }
 
     fn write_content(&self, file: &mut File, orig: &str) -> std::io::Result<()> {
@@ -72,12 +232,22 @@ impl AsmPrinter {
             writeln!(file, "{datum}")?;
         }
 
-        writeln!(file, "USER_STACK        .FILL xFDFF")?;
-        writeln!(file, "RETURN_SLOT       .FILL xFDFF")?;
+        let user_stack = self.fixed_label_name("USER_STACK");
+        let return_slot = self.fixed_label_name("RETURN_SLOT");
+        writeln!(file, "{user_stack:<17} .FILL xFDFF")?;
+        writeln!(file, "{return_slot:<17} .FILL xFDFF")?;
 
         writeln!(file, ".END")?;
 
         Ok(())
+    }
+
+    // USER_STACK / RETURN_SLOT 的当前映射名（Suki 模式下推入时已登记）
+    fn fixed_label_name(&self, original: &str) -> String {
+        self.label_map
+            .get(original)
+            .cloned()
+            .unwrap_or_else(|| original.to_string())
     }
 
     // 两遍处理：先分配地址并登记标号，再校验每条指令的字段范围。
@@ -97,10 +267,17 @@ impl AsmPrinter {
         for bundle in self.instructions.iter().chain(self.data.iter()) {
             match bundle {
                 LC3Bundle::HeaderLabel(label, _) => {
-                    check_label(label, addr as u16, &mut labels, &mut errors, &mut warnings);
+                    if self.compat == CompatTarget::Suki {
+                        errors.push(format!("label '{}' 独占一行（Suki 要求标号与指令/伪指令同行）", label));
+                    }
+                    check_label(label, addr as u16, &mut labels, &mut errors, &mut warnings, self.compat);
+                }
+                LC3Bundle::LabeledInstruction(label, _, _) => {
+                    check_label(label, addr as u16, &mut labels, &mut errors, &mut warnings, self.compat);
+                    addr += 1;
                 }
                 LC3Bundle::Directive(Some(label), directive, _) => {
-                    check_label(label, addr as u16, &mut labels, &mut errors, &mut warnings);
+                    check_label(label, addr as u16, &mut labels, &mut errors, &mut warnings, self.compat);
                     addr += directive_words(directive) as u32;
                 }
                 LC3Bundle::Directive(None, directive, _) => {
@@ -114,9 +291,11 @@ impl AsmPrinter {
         }
 
         // 输出末尾固定追加的两个数据字（见 write_content）
-        check_label(&Label::Label("USER_STACK".to_string()), addr as u16, &mut labels, &mut errors, &mut warnings);
+        let user_stack = Label::Label(self.fixed_label_name("USER_STACK"));
+        let return_slot = Label::Label(self.fixed_label_name("RETURN_SLOT"));
+        check_label(&user_stack, addr as u16, &mut labels, &mut errors, &mut warnings, self.compat);
         addr += 1;
-        check_label(&Label::Label("RETURN_SLOT".to_string()), addr as u16, &mut labels, &mut errors, &mut warnings);
+        check_label(&return_slot, addr as u16, &mut labels, &mut errors, &mut warnings, self.compat);
         addr += 1;
 
         if addr > 0xFFFF {
@@ -128,7 +307,11 @@ impl AsmPrinter {
         for bundle in &self.instructions {
             match bundle {
                 LC3Bundle::Instruction(inst, _) => {
-                    validate_inst(inst, pc as u16, &labels, &mut errors);
+                    validate_inst(inst, pc as u16, &labels, &mut errors, self.compat);
+                    pc += 1;
+                }
+                LC3Bundle::LabeledInstruction(_, inst, _) => {
+                    validate_inst(inst, pc as u16, &labels, &mut errors, self.compat);
                     pc += 1;
                 }
                 LC3Bundle::HeaderLabel(_, _) | LC3Bundle::Directive(_, _, _)
@@ -163,10 +346,17 @@ fn directive_words(d: &LC3Directive) -> usize {
 }
 
 fn check_label(label: &Label, addr: u16, labels: &mut HashMap<String, u16>,
-               errors: &mut Vec<String>, warnings: &mut Vec<String>) {
+               errors: &mut Vec<String>, warnings: &mut Vec<String>, compat: CompatTarget) {
     let name = label.to_string();
 
-    if !is_valid_label_syntax(&name) {
+    if compat == CompatTarget::Suki {
+        // Suki：仅 1-20 位字母数字、字母开头（标号改写后仍需满足，作为安全网）
+        if !is_valid_suki_label(&name) {
+            errors.push(format!("invalid label '{name}': Suki 要求 1-20 位字母数字且字母开头"));
+            return;
+        }
+    }
+    else if !is_valid_label_syntax(&name) {
         errors.push(format!("invalid label '{name}': 只允许字母/数字/下划线/点，且不能以数字开头"));
         return;
     }
@@ -182,6 +372,13 @@ fn check_label(label: &Label, addr: u16, labels: &mut HashMap<String, u16>,
     if let Some(prev) = labels.insert(lower, addr) {
         errors.push(format!("duplicate label '{name}' (先前定义于 x{prev:04X})，lc3tools 标号大小写不敏感"));
     }
+}
+
+// Suki：1-20 位 ASCII 字母数字，字母开头
+fn is_valid_suki_label(name: &str) -> bool {
+    (1..=20).contains(&name.len())
+        && name.chars().all(|c| c.is_ascii_alphanumeric())
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
 }
 
 fn is_valid_label_syntax(name: &str) -> bool {
@@ -210,7 +407,22 @@ fn reserved_word(lower: &str) -> Option<&'static str> {
     None
 }
 
-fn validate_inst(inst: &LC3Inst, pc: u16, labels: &HashMap<String, u16>, errors: &mut Vec<String>) {
+fn rewrite_inst_labels(inst: &mut LC3Inst, alias: &HashMap<String, String>) {
+    let fix = |name: String| -> String { alias.get(&name).cloned().unwrap_or(name) };
+    match inst {
+        LC3Inst::Br(_, _, _, label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::Jsr(label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::Ld(_, label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::Ldi(_, label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::Lea(_, label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::St(_, label) => *label = Label::Label(fix(label.to_string())),
+        LC3Inst::Sti(_, label) => *label = Label::Label(fix(label.to_string())),
+        _ => {}
+    }
+}
+
+fn validate_inst(inst: &LC3Inst, pc: u16, labels: &HashMap<String, u16>, errors: &mut Vec<String>,
+                 compat: CompatTarget) {
     match inst {
         LC3Inst::AddImm(_, _, imm) | LC3Inst::AndImm(_, _, imm) => {
             check_imm5(imm, pc, errors);
@@ -219,6 +431,12 @@ fn validate_inst(inst: &LC3Inst, pc: u16, labels: &HashMap<String, u16>, errors:
             check_offset6(imm, pc, errors);
         }
         LC3Inst::BrImm(_, _, _, imm) => {
+            if compat == CompatTarget::Suki {
+                // Suki 的 PC 相对操作数不接受数字偏移，代码生成应已全部标号化
+                if let Immediate::Int(v) = imm {
+                    errors.push(format!("x{pc:04X}: Suki 不接受数字 BR 偏移（{v}），应使用标号"));
+                }
+            }
             check_pcoffset9(imm, pc, errors, "BR");
         }
         LC3Inst::Br(_, _, _, label) => {
@@ -362,6 +580,8 @@ impl fmt::Display for LC3Directive {
 pub enum LC3Bundle {
     HeaderLabel(Label, Option<String>), // String is comment
     Instruction(LC3Inst, Option<String>), // String is comment
+    // 标号与指令同行（Suki 不接受标号独占一行，打印前由 compat 处理生成）
+    LabeledInstruction(Label, LC3Inst, Option<String>),
     Directive(Option<Label>, LC3Directive, Option<String>), // String is comment
     SectionComment(String),
     Newline,
@@ -385,6 +605,12 @@ impl fmt::Display for LC3Bundle {
                         write!(f, "{:40}; {comment}", inst)
                     },
                     None => write!(f, "    {inst}"),
+                }
+            },
+            LC3Bundle::LabeledInstruction(label, inst, comment) => {
+                match comment {
+                    Some(comment) => write!(f, "{label} {inst:<34}; {comment}"),
+                    None => write!(f, "{label} {inst}"),
                 }
             },
             LC3Bundle::Directive(label, directive, comment) => {

@@ -32,11 +32,26 @@ before writing the file, and refuses to emit bad assembly.
 ```bash
 target/release/lc3-compile -o out.asm program.c
 # optional: --orig x3000 (start address, default x3000)
+# optional: --compat suki  (ICS OJ / Suki judge backend; default lc3tools)
 ```
 
 Non-zero exit = parse error, unsupported feature (`error: unsupported
 feature: <what>`), or LC-3 constraint violation. Read the message; the compiler
 never produces output that lc3tools would reject.
+
+## Target assemblers (--compat)
+
+- `lc3tools` (default): standard implementation, accepts `_`/`.` in labels and
+  numeric PC-relative offsets (`BRz #2`).
+- `suki`: the ICS OJ judge (`suki-lc3`). Its assembler is stricter: labels are
+  1-20 alphanumeric chars only (no `_`/`.`), one label per line (no label-only
+  lines), PC-relative operands must be labels, `.FILL` takes no labels. In
+  this mode the compiler rewrites generated labels (`USER_STACK`->`USERSTACK`,
+  `main.while.0.end`->`mainwhile0end`, `__mul`->`Xmul`), replaces numeric
+  branch offsets with labeled ones, and merges labels onto the following
+  instruction line. Output remains valid for both assemblers. Verify with
+  `python3 tests/verify.py --compat suki` plus the Suki-side acceptance test
+  `suki_compat_outputs_assemble` in `suki-lc3/tests/repro_oj.rs`.
 
 ## Assemble and run
 

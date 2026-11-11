@@ -33,14 +33,33 @@ struct Cli {
     #[arg(long = "orig", value_name = "ADDR", default_value = "x3000")]
     orig: String,
 
+    // 目标汇编器兼容档位：lc3tools（默认，标准实现）或 suki（ICS OJ 判题器）
+    #[arg(long = "compat", value_name = "TARGET", default_value = "lc3tools")]
+    compat: String,
+
     #[arg(value_name = "INPUT_FILE")]
     input: PathBuf,
 
 }
 
+/// 解析 --compat；未知档位返回 Err 提示。
+fn parse_compat(text: &str) -> Result<codegen::asmprinter::CompatTarget, String> {
+    match text.to_lowercase().as_str() {
+        "lc3tools" | "lc3-tools" | "default" => Ok(codegen::asmprinter::CompatTarget::Lc3Tools),
+        "suki" | "oj" => Ok(codegen::asmprinter::CompatTarget::Suki),
+        other => Err(format!(
+            "unknown compat target '{other}' (expected 'lc3tools' or 'suki')")),
+    }
+}
+
 fn main() {
 
     let cli = Cli::parse();
+
+    let compat = match parse_compat(&cli.compat) {
+        Ok(c) => c,
+        Err(message) => {println!("error: {message}"); exit(1)},
+    };
 
     let input_path: PathBuf  = cli.input;
 
@@ -95,6 +114,7 @@ fn main() {
     let casts = typecheck.casts;
 
     let mut printer = codegen::asmprinter::AsmPrinter::new();
+    printer.set_compat(compat);
     let mut codegen = codegen::codegen::Codegen::new(&ast, &mut printer, &context, analyzer.symbol_table, casts);
 
     codegen.emit_ast_node(&ast.root.unwrap());
