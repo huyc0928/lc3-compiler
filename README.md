@@ -53,6 +53,11 @@ To use the compiler without building from source I recommend using https://godbo
 ### Usage Gudie
 To run the compiler, use `lc3-compile`:
 
+Full documentation — CLI reference, the supported C subset, LC-3-specific
+coding rules, and the lc3tools workflow — lives in [docs/USAGE.md](docs/USAGE.md)
+(中文版：[docs/USAGE.zh-CN.md](docs/USAGE.zh-CN.md)). An agent-facing skill is
+at [.agents/skills/lc3-compile/SKILL.md](.agents/skills/lc3-compile/SKILL.md).
+
 ```
 A C to LC3 Compiler built for students at the University of Illinois Urbana-Champaign by HKN (https://hkn-alpha.netlify.app).
 
